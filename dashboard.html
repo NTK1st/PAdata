@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32 Sensor Dashboard</title>
+<!-- Chart.js CDN แบบไม่มี source map warning -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.3.0/dist/chart.umd.min.js"></script>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Sensor Dashboard (Advanced)</title>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.3.0/dist/chart.umd.min.js"></script>
+  <!-- MQTT.js CDN -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root{
+      --bg: #0f1724; --card-bg: linear-gradient(180deg,#0b1220, #0f1724);
+      --accent: #00d4ff; --accent-2:#7b61ff; --muted:#9aa7b2; --glass: rgba(255,255,255,0.04);
+      --good: #22c55e; --warn:#f59e0b; --danger:#ef4444;
+    }
+    html,body{height:100%;}
+    body { font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; margin: 18px; color: #e6eef6; background: linear-gradient(180deg,#071022 0%, #081827 60%); }
+    header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    h1 { margin: 0 0 6px 0; font-size: 20px; color: #fff; }
+    .grid { display:grid; grid-template-columns: 320px 1fr; gap:18px; align-items:start; }
+    @media (max-width:900px){ .grid{ grid-template-columns: 1fr; } }
+    .card { background: var(--glass); padding:14px; border-radius:10px; box-shadow: 0 6px 18px rgba(2,6,23,0.6); border: 1px solid rgba(255,255,255,0.03); }
+    .tiles { display:grid; grid-template-columns: repeat(2,1fr); gap:10px; margin-top:12px; }
+    .tile { padding:10px; border-radius:8px; background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.04)); display:flex; align-items:center; justify-content:space-between; }
+    .tile .value{ font-size:20px; font-weight:700; }
+    .tile .label{ font-size:12px; color:var(--muted); }
+    canvas { width:100% !important; height:160px !important; }
+    .status { font-weight:600; margin-top:8px; color:var(--muted); }
+    .muted { color: var(--muted); font-size:0.9em; }
+    .controls { display:flex; align-items:center; gap:12px; }
+    .led-badge { font-weight:700; padding:6px 10px; border-radius:6px; background: rgba(255,255,255,0.04); color:#fff; display:inline-flex; gap:8px; align-items:center; }
+    .led-bulb { width:18px; height:18px; border-radius:50%; background:#333; box-shadow: 0 0 6px rgba(0,0,0,0.6) inset; transition: 0.2s; }
+    .led-on { background: radial-gradient(circle at 30% 30%, #fff6d6, #ffd54a 30%, #ffb300 60%); box-shadow: 0 0 10px rgba(255,180,0,0.9), 0 0 30px rgba(255,140,0,0.25); }
+    /* Switch CSS */
+    .switch { position: relative; display: inline-block; width: 56px; height: 32px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255,255,255,0.06); transition: .2s; border-radius: 32px; }
+    .slider:before { position: absolute; content: ""; height: 24px; width: 24px; left: 4px; bottom: 4px; background-color: white; transition: .2s; border-radius: 50%; }
+    input:checked + .slider { background: linear-gradient(90deg,var(--accent), var(--accent-2)); }
+    input:checked + .slider:before { transform: translateX(24px); }
+    .small { font-size: 0.9em; }
+    .footer { margin-top: 16px; color: var(--muted); font-size:0.85em; }
+    .controls-row{ display:flex; gap:8px; margin-top:12px; }
+    .btn { padding:8px 12px; border-radius:8px; background:rgba(255,255,255,0.03); color:#eaf6ff; border:1px solid rgba(255,255,255,0.03); cursor:pointer; }
+    .btn:active{ transform:translateY(1px);} 
+    .btn.primary{ background: linear-gradient(90deg,var(--accent),var(--accent-2)); border:none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>ESP32 Sensor Dashboard (Advanced)</h1>
+  <div class="muted">Broker: <code>66c46947755f4602a6bbefe938335380.s1.eu.hivemq.cloud</code></div>
+</header>
+
+
+<div class="grid">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div style="font-size:14px;color:var(--muted);">Device Controls</div>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:12px;">
+          <div class="led-badge"><div id="ledBulb" class="led-bulb" aria-hidden="true"></div><span id="ledStatus">OFF</span></div>
+          <label class="switch" title="Toggle LED">
+            <input type="checkbox" id="ledSwitch" aria-label="LED switch">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div class="muted">Connection</div>
+        <div style="font-weight:700;margin-top:6px;">MQTT: <span id="mqttStatus">Disconnected</span></div>
+      </div>
+    </div>
+
+    <div class="tiles">
+      <div class="tile"><div><div class="label">Temperature</div><div class="value" id="valTemp">-- °C</div></div><div id="tempTrend" class="small muted">—</div></div>
+      <div class="tile"><div><div class="label">Humidity</div><div class="value" id="valHum">-- %</div></div><div id="humTrend" class="small muted">—</div></div>
+      <div class="tile"><div><div class="label">Light</div><div class="value" id="valLight">--</div></div><div id="lightTrend" class="small muted">—</div></div>
+      <div class="tile"><div><div class="label">Rain</div><div class="value" id="valRain">--</div></div><div id="rainTrend" class="small muted">—</div></div>
+    </div>
+
+    <div class="controls-row">
+      <button class="btn" id="pauseBtn">Pause Charts</button>
+      <button class="btn" id="exportBtn">Export CSV</button>
+      <button class="btn primary" id="themeBtn">Toggle Theme</button>
+    </div>
+
+    <div style="margin-top:10px;" class="muted">Last sensor update: <span id="lastSeenSensors">never</span> • Last LED update: <span id="lastSeenLED">never</span></div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:12px;">
+    <div class="card"><canvas id="tempChart"></canvas></div>
+    <div style="display:flex;gap:12px;">
+      <div class="card" style="flex:1"><canvas id="humChart"></canvas></div>
+      <div class="card" style="flex:1"><canvas id="lightChart"></canvas></div>
+    </div>
+    <div class="card"><canvas id="rainChart"></canvas></div>
+  </div>
+
+</div>
+
+<div class="footer">Security: This demo stores MQTT credentials in client-side JS for convenience. For production, move auth to a backend and use short-lived tokens.</div>
+
+<script>
+// ==================== MQTT Settings ====================
+const broker = 'wss://66c46947755f4602a6bbefe938335380.s1.eu.hivemq.cloud:8884/mqtt';
+// NOTE: Storing credentials in client-side code is a security risk. Consider moving auth to a backend.
+const options = {
+  username: 'NTK1st',
+  password: 'Team15437%',
+  clientId: 'web_dashboard_' + Math.floor(Math.random() * 10000),
+  keepalive: 30,
+  reconnectPeriod: 2000,
+  clean: true
+};
+const topicData = 'home/sensors';
+const topicLEDSet = 'home/led/set'; // publish control commands here
+const topicLEDStatus = 'home/led/status'; // subscribe for actual LED state
+
+// ==================== Connect MQTT ====================
+const client = mqtt.connect(broker, options);
+const mqttStatusEl = document.getElementById('mqttStatus');
+
+client.on('connect', (connack) => {
+  console.log('✅ Connected to MQTT', connack);
+  mqttStatusEl.innerText = 'Connected';
+  mqttStatusEl.style.color = 'green';
+  setUIConnected(true);
+  // subscribe to sensors and LED status
+  client.subscribe([topicData, topicLEDStatus], { qos: 0 }, (err, granted) => {
+    if(err) console.warn('Subscribe error', err);
+    else console.log('Subscribed to', granted);
+  });
+});
+
+client.on('reconnect', () => {
+  console.log('Reconnecting...');
+  mqttStatusEl.innerText = 'Reconnecting';
+  mqttStatusEl.style.color = 'orange';
+  setUIConnected(false);
+});
+
+client.on('close', () => { mqttStatusEl.innerText = 'Disconnected'; mqttStatusEl.style.color = 'red'; console.log('MQTT closed'); setUIConnected(false); });
+client.on('offline', () => { mqttStatusEl.innerText = 'Offline'; mqttStatusEl.style.color = 'red'; console.log('MQTT offline'); setUIConnected(false); });
+client.on('error', (err) => { console.log('MQTT Error:', err); });
+
+// ==================== Chart.js Setup ====================
+const tempCtx = document.getElementById('tempChart').getContext('2d');
+const humCtx = document.getElementById('humChart').getContext('2d');
+const lightCtx = document.getElementById('lightChart').getContext('2d');
+const rainCtx = document.getElementById('rainChart').getContext('2d');
+
+function makeLineChart(ctx, label, color){
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [{ label, data: [], borderColor: color, tension: 0.3, fill: false }] },
+    options: { responsive: true, animation: false, scales: { x: { display: true }, y: { beginAtZero: true } } }
+  });
+}
+
+const tempChart = makeLineChart(tempCtx, 'Temperature (°C)', '#ff6b6b');
+const humChart = makeLineChart(humCtx, 'Humidity (%)', '#4ea8de');
+const lightChart = makeLineChart(lightCtx, 'Light', '#ffd166');
+const rainChart = makeLineChart(rainCtx, 'Rain', '#7ee787');
+
+// ==================== Handle incoming MQTT ====================
+client.on('message', (topic, message) => {
+  try {
+    const payload = message.toString();
+    if(topic === topicData){
+      const data = JSON.parse(payload);
+      const time = new Date().toLocaleTimeString();
+
+      // push to history buffer
+      pushReading(data);
+
+      // Only update charts with finite numbers (unless paused)
+      if(!chartsPaused){
+        safeUpdate(tempChart, time, data.temperature);
+        safeUpdate(humChart, time, data.humidity);
+        safeUpdate(lightChart, time, data.light);
+        safeUpdate(rainChart, time, data.rain);
+      }
+
+      // update numeric tiles
+      updateTiles(data);
+
+      // Sensors payload may include the LED state
+      if(typeof data.led !== 'undefined'){
+        const ledState = (data.led === true || data.led === '1' || String(data.led).toUpperCase() === 'ON') ? 'ON' : 'OFF';
+        document.getElementById('ledStatus').innerText = ledState;
+        setSwitchState(ledState === 'ON');
+        updateLastSeen('led');
+      }
+      updateLastSeen('sensors');
+    } else if(topic === topicLEDStatus){
+      // LED status message (could be plain 'ON'/'OFF' or JSON)
+      let ledState = 'OFF';
+      try{
+        const parsed = JSON.parse(payload);
+        if(typeof parsed === 'object'){
+          if(typeof parsed.led !== 'undefined') ledState = (parsed.led === true || String(parsed.led).toUpperCase() === 'ON') ? 'ON' : 'OFF';
+        }
+      } catch(e){
+        ledState = (String(payload).toUpperCase().includes('ON')) ? 'ON' : 'OFF';
+      }
+      document.getElementById('ledStatus').innerText = ledState;
+      setSwitchState(ledState === 'ON');
+      // animate bulb
+      const bulb = document.getElementById('ledBulb');
+      if(bulb) bulb.classList.toggle('led-on', ledState === 'ON');
+      updateLastSeen('led');
+    }
+  } catch (e) {
+    console.warn('Failed to handle message', e);
+  }
+});
+
+// Buffer to hold recent readings for export
+const readingsBuffer = [];
+let chartsPaused = false;
+
+function pushReading(data){
+  const ts = new Date().toISOString();
+  readingsBuffer.push({ ts, ...data });
+  if(readingsBuffer.length > 1000) readingsBuffer.shift();
+}
+
+// update numeric tiles
+function updateTiles(data){
+  if(typeof data.temperature !== 'undefined') document.getElementById('valTemp').innerText = `${data.temperature} °C`;
+  if(typeof data.humidity !== 'undefined') document.getElementById('valHum').innerText = `${data.humidity} %`;
+  if(typeof data.light !== 'undefined') document.getElementById('valLight').innerText = `${data.light}`;
+  if(typeof data.rain !== 'undefined') document.getElementById('valRain').innerText = `${data.rain}`;
+}
+
+// pause/resume charts
+document.getElementById('pauseBtn').addEventListener('click', () => {
+  chartsPaused = !chartsPaused;
+  document.getElementById('pauseBtn').innerText = chartsPaused ? 'Resume Charts' : 'Pause Charts';
+});
+
+// export CSV
+document.getElementById('exportBtn').addEventListener('click', () => {
+  if(readingsBuffer.length === 0){ alert('No readings to export'); return; }
+  const csv = ['timestamp,temperature,humidity,light,rain,led'].concat(readingsBuffer.map(r => `${r.ts},${r.temperature||''},${r.humidity||''},${r.light||''},${r.rain||''},${r.led||''}`)).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = `sensor_readings_${new Date().toISOString().slice(0,19).replace(/:/g,'')}.csv`; a.click(); URL.revokeObjectURL(url);
+});
+
+// theme toggle (simple inversion for fun)
+document.getElementById('themeBtn').addEventListener('click', () => {
+  document.body.classList.toggle('light');
+  if(document.body.classList.contains('light')){
+    document.body.style.background = '#f6fbff'; document.body.style.color = '#0b1822';
+  } else { document.body.style.background = 'linear-gradient(180deg,#071022 0%, #081827 60%)'; document.body.style.color = '#e6eef6'; }
+});
+
+// Helper: only push numeric values (keep last N points)
+function safeUpdate(chart, label, value){
+  const num = Number(value);
+  if(!Number.isFinite(num)) return;
+  chart.data.labels.push(label);
+  chart.data.datasets[0].data.push(num);
+  const WINDOW = 30;
+  if(chart.data.labels.length > WINDOW){ chart.data.labels.shift(); chart.data.datasets[0].data.shift(); }
+  chart.update();
+}
+
+// ==================== LED Switch UI & Publish ====================
+const ledSwitch = document.getElementById('ledSwitch');
+function setSwitchState(checked){ if(!ledSwitch) return; ledSwitch.checked = !!checked; }
+function setUIConnected(connected){ const switchEl = document.getElementById('ledSwitch'); if(switchEl) switchEl.disabled = !connected; }
+function updateLastSeen(kind){ const now = new Date().toLocaleTimeString(); if(kind === 'sensors') document.getElementById('lastSeenSensors').innerText = now; if(kind === 'led') document.getElementById('lastSeenLED').innerText = now; }
+
+ledSwitch.addEventListener('change', (e) => {
+  const checked = e.target.checked;
+  const newState = checked ? 'ON' : 'OFF';
+  if(!client || !client.connected){ alert('Not connected to MQTT broker — cannot publish'); setSwitchState(!checked); return; }
+  // optimistic UI: disable control until publish callback
+  setUIConnected(false);
+  client.publish(topicLEDSet, newState, { qos: 0 }, (err) => {
+    if(err){ console.warn('Publish error', err); setSwitchState(!checked); }
+    else { document.getElementById('ledStatus').innerText = newState; updateLastSeen('led'); }
+    setUIConnected(true);
+  });
+});
+
+</script>
+</body>
+</html>
