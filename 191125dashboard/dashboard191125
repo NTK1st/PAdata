@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ESP32 Sensor Dashboard (Advanced)</title>
+
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.3.0/dist/chart.umd.min.js"></script>
+<!-- MQTT.js -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+<style>
+  :root{
+    --bg: linear-gradient(180deg,#071022 0%, #081827 60%);
+    --card-bg: linear-gradient(180deg,#0b1220, #0f1724);
+    --accent: #00d4ff; --accent-2:#7b61ff; --muted:#9aa7b2; --text: #e6eef6;
+    --glass: rgba(255,255,255,0.04);
+    --good: #22c55e; --warn:#f59e0b; --danger:#ef4444;
+  }
+
+  /* Light theme variables (toggled when body.light present) */
+  body.light {
+    --bg: #f6fbff;
+    --card-bg: linear-gradient(180deg,#ffffff,#f0f7ff);
+    --accent: #0b78ff;
+    --accent-2: #7b61ff;
+    --muted: #5b6b74;
+    --text: #072031;
+    --glass: rgba(2,6,23,0.03);
+  }
+
+  html,body{height:100%;}
+  body {
+    font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+    margin: 18px auto;
+    color: var(--text);
+    background: var(--bg);
+    max-width:1800px;
+  }
+
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+  h1 { margin: 0 0 6px 0; font-size: 20px; color: var(--text); flex:1; min-width:200px; }
+  .header-right { display:flex; gap:12px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+  .grid { display:grid; grid-template-columns: 380px minmax(0, 1fr); gap:18px; align-items:start; max-width:1600px; margin:0 auto; }
+  body.mobile-layout .grid { grid-template-columns: 1fr; }
+  @media (max-width:1200px){ .grid{ grid-template-columns: 1fr; } }
+  @media (max-width:768px){ body:not(.mobile-layout) .grid { grid-template-columns: 1fr; } }
+
+  .card { background: var(--glass); padding:14px; border-radius:10px; box-shadow: 0 6px 18px rgba(2,6,23,0.6); border: 1px solid rgba(0,0,0,0.08); }
+  .tiles { display:grid; grid-template-columns: repeat(2,1fr); gap:10px; margin-top:12px; }
+  .tile { padding:10px; border-radius:8px; background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02)); display:flex; align-items:center; justify-content:space-between; }
+  .tile .value{ font-size:20px; font-weight:700; color:var(--text); }
+  .tile .label{ font-size:12px; color:var(--muted); }
+  canvas { width:100% !important; height:280px !important; }
+  .status { font-weight:600; margin-top:8px; color:var(--muted); }
+  .muted { color: var(--muted); font-size:0.9em; }
+  .controls { display:flex; align-items:center; gap:12px; }
+  .led-badge { font-weight:700; padding:6px 10px; border-radius:6px; background: rgba(255,255,255,0.03); color:var(--text); display:inline-flex; gap:8px; align-items:center; }
+  .neopixel-badge { font-weight:700; padding:6px 10px; border-radius:6px; background: rgba(255,255,255,0.03); color:var(--text); display:inline-flex; gap:8px; align-items:center; }
+  .neopixel-preview { width:18px; height:18px; border-radius:4px; background:#222; box-shadow: inset 0 0 4px rgba(0,0,0,0.6); }
+  .led-bulb { width:18px; height:18px; border-radius:50%; background:#333; box-shadow: 0 0 6px rgba(0,0,0,0.6) inset; transition: 0.2s; }
+  .led-on { background: radial-gradient(circle at 30% 30%, #fff6d6, #ffd54a 30%, #ffb300 60%); box-shadow: 0 0 10px rgba(255,180,0,0.9), 0 0 30px rgba(255,140,0,0.25); }
+
+  /* Switch CSS */
+  .switch { position: relative; display: inline-block; width: 56px; height: 32px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255,255,255,0.06); transition: .2s; border-radius: 32px; }
+  .slider:before { position: absolute; content: ""; height: 24px; width: 24px; left: 4px; bottom: 4px; background-color: white; transition: .2s; border-radius: 50%; }
+  input:checked + .slider { background: linear-gradient(90deg,var(--accent), var(--accent-2)); }
+  input:checked + .slider:before { transform: translateX(24px); }
+
+  .small { font-size: 0.9em; }
+  .footer { margin-top: 16px; color: var(--muted); font-size:0.85em; }
+  .controls-row{ display:flex; gap:8px; margin-top:12px; }
+  .controls-group { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+  @media (max-width:900px) {
+    .controls-row, .controls-group { flex-direction:column; gap:10px; }
+    .controls-row label, .controls-row div { width:100%; }
+  }
+  .btn { padding:8px 12px; border-radius:8px; background:rgba(255,255,255,0.03); color:var(--text); border:1px solid rgba(0,0,0,0.06); cursor:pointer; }
+  .btn:active{ transform:translateY(1px);} 
+  .btn.primary{ background: linear-gradient(90deg,var(--accent),var(--accent-2)); border:none; color:#fff; }
+  .timezone-row { display:flex; gap:12px; align-items:center; margin-top:12px; }
+  .timezone-row label { font-size:12px; color:var(--muted); }
+  .timezone-row select { padding:6px 10px; border-radius:6px; background:rgba(255,255,255,0.03); color:var(--text); border:1px solid rgba(0,0,0,0.06); cursor:pointer; }
+
+  .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; }
+  .modal.active { display:flex; }
+  .modal-content { background:var(--card-bg); padding:24px; border-radius:12px; border:1px solid rgba(0,0,0,0.08); max-width:900px; width:95%; max-height:80vh; overflow-y:auto; color:var(--text); }
+  .modal-header { font-size:18px; font-weight:700; margin-bottom:16px; color:var(--text); }
+  .modal-close { float:right; cursor:pointer; font-size:24px; color:var(--muted); }
+  .history-table { width:100%; font-size:12px; border-collapse:collapse; margin-top:12px; color:var(--text); }
+  .history-table th, .history-table td { padding:8px; text-align:left; border-bottom:1px solid rgba(0,0,0,0.06); }
+  .history-table th { color:var(--accent); font-weight:700; }
+  .history-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-top:12px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; }
+  .stat-label { font-size:11px; color:var(--muted); }
+  .stat-value { font-size:16px; font-weight:700; color:var(--accent); margin-top:4px; }
+  .layout-toggle { padding:8px 12px; border-radius:8px; background:rgba(255,255,255,0.03); color:var(--text); border:1px solid rgba(0,0,0,0.06); cursor:pointer; font-size:12px; white-space:nowrap; }
+  .layout-toggle:hover { background:rgba(255,255,255,0.06); }
+  .charts-container { display:flex; flex-direction:column; gap:12px; width:100%; }
+  .chart-row { display:flex; gap:12px; width:100%; }
+  .chart-row.full { width:100%; }
+  .chart-row.half { flex:1; min-width:0; }
+  .chart-row.half .card { min-width:0; }
+  body.mobile-layout .chart-row { flex-direction:column; }
+  body.mobile-layout .chart-row.half { flex:none; width:100%; }
+  body.mobile-layout .chart-row.half .card { width:100%; }
+  .card { overflow:hidden; }
+  .card canvas { max-width:100%; display:block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ESP32 Sensor Dashboard (Advanced)</h1>
+  <div class="header-right">
+    <button class="layout-toggle" id="layoutToggleBtn" title="Toggle between PC and Mobile layout">📱 Mobile Layout</button>
+    <div class="muted">Broker: <code id="brokerHost" style="font-size:11px;color:var(--muted);">loading...</code></div>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div style="font-size:14px;color:var(--muted);">Device Controls</div>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:12px;">
+          <div class="led-badge"><div id="ledBulb" class="led-bulb" aria-hidden="true"></div><span id="ledStatus">OFF</span></div>
+          <label class="switch" title="Toggle LED">
+            <input type="checkbox" id="ledSwitch" aria-label="LED switch">
+            <span class="slider"></span>
+          </label>
+          <!-- NeoPixel status / preview -->
+          <div style="width:12px"></div>
+          <div class="neopixel-badge" id="neopixelBox">NeoPixel: <span id="neopixelStatus">?</span> <span id="neopixelPreview" class="neopixel-preview" title="color preview"></span></div>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div class="muted">Connection</div>
+        <div style="font-weight:700;margin-top:6px;">MQTT: <span id="mqttStatus">Disconnected</span></div>
+      </div>
+    </div>
+
+    <div class="tiles">
+      <div class="tile"><div><div class="label">Temperature</div><div class="value" id="valTemp">-- °C</div></div><div id="tempTrend" class="small muted">—</div></div>
+      <div class="tile"><div><div class="label">Humidity</div><div class="value" id="valHum">-- %</div></div><div id="humTrend" class="small muted">—</div></div>
+      <div class="tile"><div><div class="label">Light</div><div class="value" id="valLight">--</div></div><div id="lightTrend" class="small muted">—</div></div>
+      <div class="tile"><div><div class="label">Rain</div><div class="value" id="valRain">--</div></div><div id="rainTrend" class="small muted">—</div></div>
+    </div>
+
+      <div class="controls-group">
+        <div class="controls-row">
+          <button class="btn" id="pauseBtn">Pause Charts</button>
+          <button class="btn" id="exportBtn">Export CSV</button>
+          <button class="btn" id="historyBtn">View History</button>
+          <button class="btn" id="neopixelBtn">NeoPixel</button>
+          <button class="btn primary" id="themeBtn">Toggle Theme</button>
+        </div>
+        <div class="controls-row" style="flex-wrap:wrap;gap:16px;align-items:center;">
+            <label style="display:flex;align-items:center;gap:6px;">
+              <span style="min-width:70px;">Brightness</span>
+              <input type="range" id="brightnessSlider" min="0" max="255" value="120" style="width:100px;">
+              <span id="brightnessValue">120</span>
+            </label>
+          </div>
+      </div>
+
+    <div class="timezone-row">
+      <label for="gmtSelect">Timezone (GMT):</label>
+      <select id="gmtSelect">
+        <option value="0">GMT+0 (UTC)</option>
+        <option value="1">GMT+1 (CET, Africa, Europe)</option>
+        <option value="2">GMT+2 (EET, Africa)</option>
+        <option value="3">GMT+3 (MSK, East Africa)</option>
+        <option value="4">GMT+4 (Dubai, Caucasus)</option>
+        <option value="5">GMT+5 (Pakistan, Central Asia)</option>
+        <option value="5.5">GMT+5:30 (India, Sri Lanka)</option>
+        <option value="6">GMT+6 (Bangladesh, Central Asia)</option>
+        <option value="7" selected>GMT+7 (Bangkok, Vietnam, Indonesia)</option>
+        <option value="8">GMT+8 (Hong Kong, Singapore, China)</option>
+        <option value="9">GMT+9 (Tokyo, Seoul, Australia East)</option>
+        <option value="10">GMT+10 (Sydney, Brisbane)</option>
+        <option value="11">GMT+11 (Solomon Islands)</option>
+        <option value="12">GMT+12 (Fiji, New Zealand)</option>
+        <option value="-1">GMT-1 (Atlantic)</option>
+        <option value="-2">GMT-2 (Mid-Atlantic)</option>
+        <option value="-3">GMT-3 (Buenos Aires, Brazil)</option>
+        <option value="-4">GMT-4 (EDT, Caribbean)</option>
+        <option value="-5">GMT-5 (EST, New York)</option>
+        <option value="-6">GMT-6 (CST, Mexico)</option>
+        <option value="-7">GMT-7 (MST, Denver)</option>
+        <option value="-8">GMT-8 (PST, Los Angeles)</option>
+        <option value="-9">GMT-9 (Alaska)</option>
+        <option value="-10">GMT-10 (Hawaii)</option>
+      </select>
+    </div>
+
+    <div style="margin-top:10px;" class="muted">Last sensor update: <span id="lastSeenSensors">never</span> • Last LED update: <span id="lastSeenLED">never</span></div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:12px;flex:1;min-width:0;">
+    <div class="chart-row half" style="flex-shrink:0;">
+      <div class="card" style="flex:1;min-width:0;"><canvas id="tempChart"></canvas></div>
+      <div class="card" style="flex:1;min-width:0;"><canvas id="rainChart"></canvas></div>
+    </div>
+    <div class="chart-row half" style="flex-shrink:0;">
+      <div class="card" style="flex:1;min-width:0;"><canvas id="humChart"></canvas></div>
+      <div class="card" style="flex:1;min-width:0;"><canvas id="lightChart"></canvas></div>
+    </div>
+  </div>
+
+</div>
+
+<div id="historyModal" class="modal">
+  <div class="modal-content">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div class="modal-header">Sensor History</div>
+      <span class="modal-close" onclick="closeHistoryModal()">&times;</span>
+    </div>
+    <div style="Margin-bottom:12px;">
+      <button class="btn" id="clearHistoryBtn">Clear All History</button>
+      <button class="btn" id="downloadHistoryBtn">Download Full History</button>
+    </div>
+    <div class="history-stats" id="historyStats"></div>
+    <table class="history-table" id="historyTable">
+      <thead>
+        <tr>
+          <th>Timestamp (Local)</th>
+          <th>Temperature (°C)</th>
+          <th>Humidity (%)</th>
+          <th>Light</th>
+          <th>Rain</th>
+          <th>LED</th>
+        </tr>
+      </thead>
+      <tbody id="historyBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="footer">Security: This demo stores MQTT credentials in client-side JS for convenience. For production, move auth to a backend and use short-lived tokens.</div>
+
+<script>
+/* ==================== CONFIG ==================== */
+const broker = 'wss://9537a19f731146f885f64fdc978e77d2.s1.eu.hivemq.cloud:8884/mqtt';
+const options = {
+  username: 'NTK1st',
+  password: 'Team15437%',
+  clientId: 'web_dashboard_' + Math.floor(Math.random() * 10000),
+  keepalive: 30,
+  reconnectPeriod: 2000,
+  clean: true
+};
+const topicData = 'home/sensors';
+const topicLEDSet = 'home/led/set';
+const topicLEDStatus = 'home/led/status';
+const topicNeoPixelSet = 'home/neopixel/set';
+const topicNeoPixelStatus = 'home/neopixel/status';
+
+/* ==================== MQTT CONNECT ==================== */
+const client = mqtt.connect(broker, options);
+const mqttStatusEl = document.getElementById('mqttStatus');
+
+client.on('connect', (connack) => {
+  console.log('✅ Connected to MQTT', connack);
+  mqttStatusEl.innerText = 'Connected';
+  mqttStatusEl.style.color = 'green';
+  setUIConnected(true);
+  client.subscribe([topicData, topicLEDStatus, topicNeoPixelSet, topicNeoPixelStatus], { qos: 0 }, (err, granted) => {
+    if(err) console.warn('Subscribe error', err);
+    else console.log('Subscribed to', granted);
+  });
+});
+
+client.on('reconnect', () => {
+  console.log('Reconnecting...');
+  mqttStatusEl.innerText = 'Reconnecting';
+  mqttStatusEl.style.color = 'orange';
+  setUIConnected(false);
+});
+
+client.on('close', () => { mqttStatusEl.innerText = 'Disconnected'; mqttStatusEl.style.color = 'red'; console.log('MQTT closed'); setUIConnected(false); });
+client.on('offline', () => { mqttStatusEl.innerText = 'Offline'; mqttStatusEl.style.color = 'red'; console.log('MQTT offline'); setUIConnected(false); });
+client.on('error', (err) => { console.log('MQTT Error:', err); });
+
+/* ==================== CHARTS ==================== */
+const tempCtx = document.getElementById('tempChart').getContext('2d');
+const humCtx = document.getElementById('humChart').getContext('2d');
+const lightCtx = document.getElementById('lightChart').getContext('2d');
+const rainCtx = document.getElementById('rainChart').getContext('2d');
+
+function makeLineChart(ctx, label, color){
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [{ label, data: [], borderColor: color, tension: 0.3, fill: false }] },
+    options: { responsive: true, animation: false, scales: { x: { display: true }, y: { beginAtZero: true } } }
+  });
+}
+
+const tempChart = makeLineChart(tempCtx, 'Temperature (°C)', '#ff6b6b');
+const humChart = makeLineChart(humCtx, 'Humidity (%)', '#4ea8de');
+const lightChart = makeLineChart(lightCtx, 'Light', '#ffd166');
+const rainChart = makeLineChart(rainCtx, 'Rain', '#7ee787');
+
+/* ==================== DATA HANDLING ==================== */
+client.on('message', (topic, message) => {
+  try {
+    const payload = message.toString();
+    if(topic === topicData){
+      const data = JSON.parse(payload);
+      const time = new Date().toLocaleTimeString();
+
+      pushReading(data);
+
+      if(!chartsPaused){
+        safeUpdate(tempChart, time, data.temperature);
+        safeUpdate(humChart, time, data.humidity);
+        safeUpdate(lightChart, time, data.light);
+        safeUpdate(rainChart, time, data.rain);
+      }
+
+      updateTiles(data);
+
+      if(typeof data.led !== 'undefined'){
+        const ledState = (data.led === true || data.led === '1' || String(data.led).toUpperCase() === 'ON') ? 'ON' : 'OFF';
+        document.getElementById('ledStatus').innerText = ledState;
+        setSwitchState(ledState === 'ON');
+        const bulb = document.getElementById('ledBulb');
+        if(bulb) bulb.classList.toggle('led-on', ledState === 'ON');
+        updateLastSeen('led');
+      }
+      updateLastSeen('sensors');
+    } else if(topic === topicLEDStatus){
+      let ledState = 'OFF';
+      try{
+        const parsed = JSON.parse(payload);
+        if(typeof parsed === 'object'){
+          if(typeof parsed.led !== 'undefined') ledState = (parsed.led === true || String(parsed.led).toUpperCase() === 'ON') ? 'ON' : 'OFF';
+        }
+      } catch(e){
+        ledState = (String(payload).toUpperCase().includes('ON')) ? 'ON' : 'OFF';
+      }
+      document.getElementById('ledStatus').innerText = ledState;
+      setSwitchState(ledState === 'ON');
+      const bulb = document.getElementById('ledBulb');
+      if(bulb) bulb.classList.toggle('led-on', ledState === 'ON');
+      updateLastSeen('led');
+    } else if(topic === topicNeoPixelStatus){
+      // NeoPixel status message (expect JSON or simple string)
+      try{
+        const parsed = JSON.parse(payload);
+        // parsed may contain: { mode, isManualOverride, brightness, color }
+        const mode = parsed.mode || (parsed.isManualOverride ? 'manual' : 'auto');
+        const brightness = typeof parsed.brightness !== 'undefined' ? Number(parsed.brightness) : null;
+        const color = parsed.color || parsed.rgb || null; // color might be "R,G,B" or hex
+        const statusEl = document.getElementById('neopixelStatus');
+        const preview = document.getElementById('neopixelPreview');
+        if(statusEl) statusEl.innerText = mode;
+        if(preview && color){
+          // convert "R,G,B" -> rgb(...) or accept hex
+          if(typeof color === 'string' && color.includes(',')){
+            preview.style.background = 'rgb(' + color + ')';
+          } else {
+            preview.style.background = color;
+          }
+        }
+        if(brightness !== null){
+          const bS = document.getElementById('brightnessSlider');
+          const bV = document.getElementById('brightnessValue');
+          if(bS) bS.value = brightness;
+          if(bV) bV.innerText = String(brightness);
+        }
+      } catch(e){
+        // fallback: treat payload as plain text
+        const statusEl = document.getElementById('neopixelStatus');
+        if(statusEl) statusEl.innerText = payload;
+      }
+      updateLastSeen('led');
+    }
+  } catch (e) {
+    console.warn('Failed to handle message', e);
+  }
+});
+
+/* ==================== HISTORY & STORAGE ==================== */
+const STORAGE_KEY = 'sensorHistory';
+const MAX_HISTORY_RECORDS = 10000;
+const readingsBuffer = [];
+let chartsPaused = false;
+let currentGMTOffset = 7; // default GMT+7 (Thailand)
+
+/* LocalStorage helpers */
+function getHistoryFromStorage(){
+  try{
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch(e){
+    console.warn('Failed to read history from storage', e);
+    return [];
+  }
+}
+
+function saveHistoryToStorage(history){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+  } catch(e){
+    console.warn('Failed to save history to storage', e);
+  }
+}
+
+function loadHistoryToBuffer(){
+  const history = getHistoryFromStorage();
+  readingsBuffer.length = 0;
+  readingsBuffer.push(...history);
+  console.log(`✅ Loaded ${history.length} records from storage`);
+}
+
+/* Format time with selected GMT offset */
+function formatTimeWithGMT(isoString, gmtOffset){
+  try{
+    const date = new Date(isoString);
+    const utcTime = date.getTime();
+    const offsetMs = gmtOffset * 60 * 60 * 1000;
+    const localDate = new Date(utcTime + offsetMs);
+    return localDate.toLocaleString('en-US', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+  } catch(e){
+    return isoString;
+  }
+}
+
+/* Called on load */
+window.addEventListener('load', () => {
+  loadHistoryToBuffer();
+  loadLayoutPreference();
+  loadThemePreference();
+  // set initial GMT select
+  const gSel = document.getElementById('gmtSelect');
+  if(gSel) currentGMTOffset = parseFloat(gSel.value || '7');
+  // show active broker in header (strip protocol and path for readability)
+  try{
+    const hostEl = document.getElementById('brokerHost');
+    if(hostEl && typeof broker === 'string'){
+      const pretty = broker.replace(/^wss?:\/\//i, '').replace(/^mqtts?:\/\//i, '').replace(/\/.*$/, '');
+      hostEl.innerText = pretty;
+    }
+  }catch(e){ console.warn('Failed to set broker host label', e); }
+
+  // initialize brightness value display if present
+  const bS = document.getElementById('brightnessSlider');
+  const bV = document.getElementById('brightnessValue');
+  if(bS && bV) bV.innerText = bS.value;
+});
+
+/* ==================== LAYOUT & THEME ==================== */
+function loadLayoutPreference(){
+  const savedLayout = localStorage.getItem('dashboardLayout');
+  if(savedLayout === 'mobile'){
+    document.body.classList.add('mobile-layout');
+    document.getElementById('layoutToggleBtn').textContent = '🖥️ PC Layout';
+  } else {
+    document.body.classList.remove('mobile-layout');
+    document.getElementById('layoutToggleBtn').textContent = '📱 Mobile Layout';
+  }
+}
+document.getElementById('layoutToggleBtn').addEventListener('click', () => {
+  const isMobileLayout = document.body.classList.toggle('mobile-layout');
+  localStorage.setItem('dashboardLayout', isMobileLayout ? 'mobile' : 'pc');
+  const btn = document.getElementById('layoutToggleBtn');
+  btn.textContent = isMobileLayout ? '🖥️ PC Layout' : '📱 Mobile Layout';
+  tempChart.resize(); humChart.resize(); lightChart.resize(); rainChart.resize();
+});
+
+function loadThemePreference(){
+  const saved = localStorage.getItem('dashboardTheme') || 'dark';
+  if(saved === 'light') document.body.classList.add('light');
+  else document.body.classList.remove('light');
+  updateThemeButtonText();
+}
+function toggleTheme(){
+  const isLight = document.body.classList.toggle('light');
+  localStorage.setItem('dashboardTheme', isLight ? 'light' : 'dark');
+  tempChart.update(); humChart.update(); lightChart.update(); rainChart.update();
+  updateThemeButtonText();
+}
+function updateThemeButtonText(){
+  const btn = document.getElementById('themeBtn');
+  if(document.body.classList.contains('light')) btn.innerText = 'Switch to Dark';
+  else btn.innerText = 'Switch to Light';
+}
+document.getElementById('themeBtn').addEventListener('click', toggleTheme);
+
+document.getElementById('gmtSelect').addEventListener('change', (e) => {
+  currentGMTOffset = parseFloat(e.target.value);
+  console.log(`Timezone changed to GMT${currentGMTOffset >= 0 ? '+' : ''}${currentGMTOffset}`);
+  updateLastSeen('sensors');
+});
+
+/* ==================== HISTORY MODAL ==================== */
+function openHistoryModal(){
+  const modal = document.getElementById('historyModal');
+  if(modal) modal.classList.add('active');
+  renderHistoryTable();
+  renderHistoryStats();
+}
+function closeHistoryModal(){
+  const modal = document.getElementById('historyModal');
+  if(modal) modal.classList.remove('active');
+}
+function renderHistoryTable(){
+  const tbody = document.getElementById('historyBody');
+  if(!tbody) return;
+  tbody.innerHTML = '';
+  const history = getHistoryFromStorage();
+  const limit = Math.min(history.length, 200);
+  for(let i = Math.max(0, history.length - limit); i < history.length; i++){
+    const record = history[i];
+    const row = document.createElement('tr');
+    const timeStr = formatTimeWithGMT(record.ts, currentGMTOffset);
+    row.innerHTML = `
+      <td>${timeStr}</td>
+      <td>${record.temperature !== undefined ? record.temperature : '-'}</td>
+      <td>${record.humidity !== undefined ? record.humidity : '-'}</td>
+      <td>${record.light !== undefined ? record.light : '-'}</td>
+      <td>${record.rain !== undefined ? record.rain : '-'}</td>
+      <td>${record.led !== undefined ? record.led : '-'}</td>
+    `;
+    tbody.appendChild(row);
+  }
+}
+function renderHistoryStats(){
+  const statsDiv = document.getElementById('historyStats');
+  if(!statsDiv) return;
+  const history = getHistoryFromStorage();
+
+  let tempSum = 0, tempCount = 0, tempMin = Infinity, tempMax = -Infinity;
+  let humSum = 0, humCount = 0;
+
+  history.forEach(r => {
+    if(typeof r.temperature !== 'undefined' && Number.isFinite(r.temperature)){
+      tempSum += r.temperature;
+      tempCount++;
+
+      tempMin = Math.min(tempMin, r.temperature);
+      tempMax = Math.max(tempMax, r.temperature);
+    }
+    if(typeof r.humidity !== 'undefined' && Number.isFinite(r.humidity)){
+      humSum += r.humidity;
+      humCount++;
+    }
+  });
+
+  const tempAvg = tempCount > 0 ? (tempSum / tempCount).toFixed(1) : '-';
+  const humAvg = humCount > 0 ? (humSum / humCount).toFixed(1) : '-';
+
+  statsDiv.innerHTML = `
+    <div>
+      <div class="stat-label">Total Records</div>
+      <div class="stat-value">${history.length}</div>
+    </div>
+    <div>
+      <div class="stat-label">Avg Temperature</div>
+      <div class="stat-value">${tempAvg}°C</div>
+    </div>
+    <div>
+      <div class="stat-label">Temp Range</div>
+      <div class="stat-value">${tempMin === Infinity ? '-' : tempMin.toFixed(1)}..${tempMax === -Infinity ? '-' : tempMax.toFixed(1)}°C</div>
+    </div>
+    <div>
+      <div class="stat-label">Avg Humidity</div>
+      <div class="stat-value">${humAvg}%</div>
+    </div>
+  `;
+}
+
+/* History buttons */
+document.getElementById('historyBtn').addEventListener('click', openHistoryModal);
+document.getElementById('clearHistoryBtn').addEventListener('click', () => {
+  if(confirm('Are you sure you want to clear all history?')){
+    saveHistoryToStorage([]);
+    readingsBuffer.length = 0;
+    renderHistoryTable();
+    renderHistoryStats();
+    alert('✅ History cleared');
+  }
+});
+document.getElementById('downloadHistoryBtn').addEventListener('click', () => {
+  const history = getHistoryFromStorage();
+  if(history.length === 0){ alert('No history to download'); return; }
+  const csv = ['timestamp,temperature,humidity,light,rain,led'].concat(history.map(r => `${r.ts},${r.temperature||''},${r.humidity||''},${r.light||''},${r.rain||''},${r.led||''}`)).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = `sensor_history_full_${new Date().toISOString().slice(0,19).replace(/:/g,'')}.csv`; a.click(); URL.revokeObjectURL(url);
+});
+document.getElementById('historyModal').addEventListener('click', (e) => { if(e.target.id === 'historyModal') closeHistoryModal(); });
+
+/* ==================== UI UPDATES ==================== */
+function updateTiles(data){
+  if(typeof data.temperature !== 'undefined') document.getElementById('valTemp').innerText = `${data.temperature} °C`;
+  if(typeof data.humidity !== 'undefined') document.getElementById('valHum').innerText = `${data.humidity} %`;
+  if(typeof data.light !== 'undefined') document.getElementById('valLight').innerText = `${data.light}`;
+  if(typeof data.rain !== 'undefined') document.getElementById('valRain').innerText = `${data.rain}`;
+}
+function pushReading(data){
+  const ts = new Date().toISOString();
+  const reading = { ts, ...data };
+  readingsBuffer.push(reading);
+  if(readingsBuffer.length > 1000) readingsBuffer.shift();
+
+  const history = getHistoryFromStorage();
+  history.push(reading);
+  if(history.length > MAX_HISTORY_RECORDS) history.shift();
+  saveHistoryToStorage(history);
+}
+
+/* Pause/resume charts */
+document.getElementById('pauseBtn').addEventListener('click', () => {
+  chartsPaused = !chartsPaused;
+  document.getElementById('pauseBtn').innerText = chartsPaused ? 'Resume Charts' : 'Pause Charts';
+});
+
+/* Export current buffer */
+document.getElementById('exportBtn').addEventListener('click', () => {
+  if(readingsBuffer.length === 0){ alert('No readings to export'); return; }
+  const csv = ['timestamp,temperature,humidity,light,rain,led'].concat(readingsBuffer.map(r => `${r.ts},${r.temperature||''},${r.humidity||''},${r.light||''},${r.rain||''},${r.led||''}`)).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = `sensor_readings_${new Date().toISOString().slice(0,19).replace(/:/g,'')}.csv`; a.click(); URL.revokeObjectURL(url);
+});
+
+/* NeoPixel control button: prompt and publish */
+document.getElementById('neopixelBtn').addEventListener('click', () => {
+  const cmd = prompt("NeoPixel command:\n'AUTO' (temp/rain control)\n'OFF' (turn off)\n'R,G,B' (e.g. 255,0,150 for manual color)");
+  if(!cmd) return;
+  if(!client || !client.connected){ alert('Not connected to MQTT broker — cannot publish'); return; }
+  client.publish(topicNeoPixelSet, cmd, { qos: 0 }, (err) => {
+    if(err){ console.warn('NeoPixel publish error', err); alert('Publish failed'); }
+    else { alert('NeoPixel command sent: ' + cmd); }
+  });
+});
+
+/* Chart-safe update */
+function safeUpdate(chart, label, value){
+  const num = Number(value);
+  if(!Number.isFinite(num)) return;
+  chart.data.labels.push(label);
+  chart.data.datasets[0].data.push(num);
+  const WINDOW = 30;
+  if(chart.data.labels.length > WINDOW){ chart.data.labels.shift(); chart.data.datasets[0].data.shift(); }
+  chart.update();
+}
+
+/* ==================== LED SWITCH ==================== */
+const ledSwitch = document.getElementById('ledSwitch');
+function setSwitchState(checked){ if(!ledSwitch) return; ledSwitch.checked = !!checked; }
+function setUIConnected(connected){ const switchEl = document.getElementById('ledSwitch'); if(switchEl) switchEl.disabled = !connected; }
+function updateLastSeen(kind){
+  const now = new Date();
+  const utcTime = now.getTime();
+  const offsetMs = currentGMTOffset * 60 * 60 * 1000;
+  const localDate = new Date(utcTime + offsetMs);
+  const timeStr = localDate.toLocaleTimeString('en-US', { hour12: false });
+  if(kind === 'sensors') document.getElementById('lastSeenSensors').innerText = timeStr;
+  if(kind === 'led') document.getElementById('lastSeenLED').innerText = timeStr;
+}
+
+/* LED publish w/ optimistic UI */
+ledSwitch.addEventListener('change', (e) => {
+  const checked = e.target.checked;
+  const newState = checked ? 'ON' : 'OFF';
+  if(!client || !client.connected){ alert('Not connected to MQTT broker — cannot publish'); setSwitchState(!checked); return; }
+  setUIConnected(false);
+  client.publish(topicLEDSet, newState, { qos: 0 }, (err) => {
+    if(err){ console.warn('Publish error', err); setSwitchState(!checked); alert('Publish error'); }
+    else { document.getElementById('ledStatus').innerText = newState; const bulb = document.getElementById('ledBulb'); if(bulb) bulb.classList.toggle('led-on', newState === 'ON'); updateLastSeen('led'); }
+    setUIConnected(true);
+  });
+});
+
+/* ==================== NeoPixel brightness & temp-threshold handlers (moved inside main script) ==================== */
+const brightnessSlider = document.getElementById('brightnessSlider');
+const brightnessValue = document.getElementById('brightnessValue');
+if(brightnessSlider && brightnessValue){
+  brightnessSlider.addEventListener('input', e => {
+    brightnessValue.innerText = e.target.value;
+  });
+  brightnessSlider.addEventListener('change', e => {
+    const val = e.target.value;
+    if(!client || !client.connected){ alert('Not connected to MQTT broker — cannot publish'); return; }
+    client.publish('home/neopixel/brightness', String(val), { qos: 0 }, err => {
+      if(err) alert('Failed to publish brightness');
+    });
+  });
+}
+
+/* Temp threshold UI removed */
+
+/* ==================== End ==================== */
+</script>
+
+</body>
+</html>
