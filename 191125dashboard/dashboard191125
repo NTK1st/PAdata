@@ -163,6 +163,22 @@
               <input type="range" id="brightnessSlider" min="0" max="255" value="120" style="width:100px;">
               <span id="brightnessValue">120</span>
             </label>
+            <!-- Servo controls: Open / Close / Set Angle -->
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:8px;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:13px;min-width:56px;">Servo</span>
+                <button class="btn" id="servoOpenBtn">Open</button>
+                <button class="btn" id="servoCloseBtn">Close</button>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <input type="range" id="servoAngleSlider" min="60" max="180" step="120" value="60" style="width:160px;">
+                <div style="display:flex;align-items:center;gap:6px;">
+                  <span id="servoAngleValue" style="min-width:36px;text-align:center;">60°</span>
+                  <button class="btn" id="servoSetBtn">Set</button>
+                </div>
+              </div>
+              <div class="muted" style="font-size:12px;">Status: <span id="servoStatus">idle</span></div>
+            </div>
           </div>
       </div>
 
@@ -197,6 +213,15 @@
     </div>
 
     <div style="margin-top:10px;" class="muted">Last sensor update: <span id="lastSeenSensors">never</span> • Last LED update: <span id="lastSeenLED">never</span></div>
+
+    <div style="margin-top:16px;padding:12px;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(0,0,0,0.06);">
+      <div style="font-size:13px;color:var(--accent);font-weight:700;margin-bottom:8px;">🔧 Servo Diagnostics</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">Last received <code style="color:var(--text);">home/servo/status</code>:</div>
+      <div id="servoStatusRaw" style="font-family:monospace;font-size:11px;color:var(--text);background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;word-break:break-all;">
+        (waiting for message...)
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:var(--muted);">Last received: <span id="servoStatusTime">never</span></div>
+    </div>
   </div>
 
   <div style="display:flex;flex-direction:column;gap:12px;flex:1;min-width:0;">
@@ -257,6 +282,8 @@ const topicLEDSet = 'home/led/set';
 const topicLEDStatus = 'home/led/status';
 const topicNeoPixelSet = 'home/neopixel/set';
 const topicNeoPixelStatus = 'home/neopixel/status';
+const topicServo = 'home/servo/set';
+const topicServoStatus = 'home/servo/status';
 
 /* ==================== MQTT CONNECT ==================== */
 const client = mqtt.connect(broker, options);
@@ -270,6 +297,11 @@ client.on('connect', (connack) => {
   client.subscribe([topicData, topicLEDStatus, topicNeoPixelSet, topicNeoPixelStatus], { qos: 0 }, (err, granted) => {
     if(err) console.warn('Subscribe error', err);
     else console.log('Subscribed to', granted);
+  });
+  // Subscribe to servo status updates
+  client.subscribe(topicServoStatus, { qos: 0 }, (err) => {
+    if(err) console.warn('Servo status subscribe error', err);
+    else console.log('Subscribed to servo status:', topicServoStatus);
   });
 });
 
@@ -377,6 +409,46 @@ client.on('message', (topic, message) => {
         if(statusEl) statusEl.innerText = payload;
       }
       updateLastSeen('led');
+    } else if(topic === topicServoStatus){
+      // Servo status may be JSON like { "angle":65, "status":"LOCKED" } or a plain number/status
+      const rawEl = document.getElementById('servoStatusRaw');
+      const timeEl = document.getElementById('servoStatusTime');
+      if(rawEl) rawEl.innerText = payload;
+      const now = new Date();
+      const utcTime = now.getTime();
+      const offsetMs = currentGMTOffset * 60 * 60 * 1000;
+      const localDate = new Date(utcTime + offsetMs);
+      const timeStr = localDate.toLocaleTimeString('en-US', { hour12: false });
+      if(timeEl) timeEl.innerText = timeStr;
+      try{
+        const parsed = JSON.parse(payload);
+        if(parsed){
+          if(typeof parsed.angle !== 'undefined'){
+            const val = Number(parsed.angle);
+            const slider = document.getElementById('servoAngleSlider');
+            const label = document.getElementById('servoAngleValue');
+            if(slider) slider.value = val;
+            if(label) label.innerText = val + '°';
+          }
+          if(typeof parsed.status !== 'undefined'){
+            const statusEl = document.getElementById('servoStatus');
+            if(statusEl) statusEl.innerText = parsed.status;
+          }
+        }
+      } catch(e){
+        // Not JSON: could be plain angle or text status
+        const asNum = Number(payload);
+        const statusEl = document.getElementById('servoStatus');
+        const slider = document.getElementById('servoAngleSlider');
+        const label = document.getElementById('servoAngleValue');
+        if(!isNaN(asNum)){
+          if(slider) slider.value = asNum;
+          if(label) label.innerText = asNum + '°';
+          if(statusEl) statusEl.innerText = 'angle ' + asNum + '°';
+        } else {
+          if(statusEl) statusEl.innerText = payload;
+        }
+      }
     }
   } catch (e) {
     console.warn('Failed to handle message', e);
@@ -641,6 +713,68 @@ document.getElementById('neopixelBtn').addEventListener('click', () => {
     else { alert('NeoPixel command sent: ' + cmd); }
   });
 });
+
+/* Servo control handlers */
+const servoOpenBtn = document.getElementById('servoOpenBtn');
+const servoCloseBtn = document.getElementById('servoCloseBtn');
+const servoSetBtn = document.getElementById('servoSetBtn');
+const servoAngleSlider = document.getElementById('servoAngleSlider');
+const servoAngleValue = document.getElementById('servoAngleValue');
+const servoStatusEl = document.getElementById('servoStatus');
+
+if(servoOpenBtn){
+  servoOpenBtn.addEventListener('click', () => {
+    if(!client || !client.connected){ alert('Not connected to MQTT broker — cannot publish'); return; }
+    // Publish numeric angle expected by firmware (180 = OPEN)
+    console.log('[dashboard] Publishing servo OPEN ->', topicServo, '180');
+    client.publish(topicServo, '180', { qos: 0 }, (err) => {
+      if(err){ console.warn('[dashboard] Servo OPEN publish error', err); alert('Failed to publish servo OPEN'); }
+      else { servoStatusEl.innerText = 'OPEN (180°)'; console.log('[dashboard] Servo OPEN published'); }
+    });
+  });
+}
+if(servoCloseBtn){
+  servoCloseBtn.addEventListener('click', () => {
+    if(!client || !client.connected){ alert('Not connected to MQTT broker — cannot publish'); return; }
+    // Publish numeric angle expected by firmware (60 = CLOSE)
+    console.log('[dashboard] Publishing servo CLOSE ->', topicServo, '60');
+    client.publish(topicServo, '60', { qos: 0 }, (err) => {
+      if(err){ console.warn('[dashboard] Servo CLOSE publish error', err); alert('Failed to publish servo CLOSE'); }
+      else { servoStatusEl.innerText = 'CLOSE (60°)'; console.log('[dashboard] Servo CLOSE published'); }
+    });
+  });
+}
+// Slider live update and publish on change
+if(servoAngleSlider){
+  // show initial value
+  if(servoAngleValue) servoAngleValue.innerText = servoAngleSlider.value + '°';
+  servoAngleSlider.addEventListener('input', (e) => {
+    if(servoAngleValue) servoAngleValue.innerText = e.target.value + '°';
+  });
+  servoAngleSlider.addEventListener('change', (e) => {
+    const a = Number(e.target.value);
+    if(a !== 60 && a !== 180){ alert('Servo only accepts 60 (CLOSE) or 180 (OPEN).'); return; }
+    if(!client || !client.connected){ alert('Not connected to MQTT broker — cannot publish'); return; }
+    console.log('[dashboard] Publishing servo angle ->', topicServo, String(a));
+    client.publish(topicServo, String(a), { qos: 0 }, (err) => {
+      if(err){ console.warn('[dashboard] Servo angle publish error', err); alert('Failed to publish servo angle'); }
+      else { if(servoStatusEl) servoStatusEl.innerText = a + '°'; console.log('[dashboard] Servo angle published', a); }
+    });
+  });
+}
+
+// Keep Set button for explicit publish (reads slider value)
+if(servoSetBtn && servoAngleSlider){
+  servoSetBtn.addEventListener('click', () => {
+    const a = Number(servoAngleSlider.value);
+    if(a !== 60 && a !== 180) return alert('Servo only accepts 60 (CLOSE) or 180 (OPEN).');
+    if(!client || !client.connected){ alert('Not connected to MQTT broker — cannot publish'); return; }
+    client.publish(topicServo, String(a), { qos: 0 }, (err) => {
+      if(err) alert('Failed to publish servo angle');
+      else { servoStatusEl.innerText = a + '°'; }
+    });
+  });
+}
 
 /* Chart-safe update */
 function safeUpdate(chart, label, value){
